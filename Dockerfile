@@ -4,6 +4,9 @@ WORKDIR /app
 
 COPY go.mod go.sum ./
 
+# Update Tailscale to latest version for compatibility
+RUN go get tailscale.com@latest && go mod tidy
+
 RUN go mod download
 
 COPY . ./
