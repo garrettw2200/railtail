@@ -2,14 +2,10 @@ FROM golang:1.25 AS builder
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
-
-# Update Tailscale to latest version for compatibility
-RUN go get tailscale.com@latest && go mod tidy
-
-RUN go mod download
-
 COPY . ./
+
+# Update Tailscale to latest version for compatibility with p8-cluster
+RUN go get tailscale.com@latest && go mod tidy && go mod download
 
 RUN CGO_ENABLED=0 go build -o railtail -ldflags="-w -s" ./.
 
