@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 	"tailscale.com/tsnet"
@@ -13,6 +14,12 @@ import (
 func fwdTCP(lstConn net.Conn, ts *tsnet.Server, targetAddr string) error {
 	defer lstConn.Close()
 
+	// Enable TCP keepalive on listener connection
+	if tcpConn, ok := lstConn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -20,30 +27,43 @@ func fwdTCP(lstConn net.Conn, ts *tsnet.Server, targetAddr string) error {
 	if err != nil {
 		return fmt.Errorf("failed to dial tailscale node: %w", err)
 	}
-
 	defer tsConn.Close()
 
-	g, ctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		if _, err := io.Copy(tsConn, lstConn); err != nil {
-			return fmt.Errorf("failed to copy data to tailscale node: %w", err)
-		}
-
-		return nil
-	})
-
-	g.Go(func() error {
-		if _, err := io.Copy(lstConn, tsConn); err != nil {
-			return fmt.Errorf("failed to copy data from tailscale node: %w", err)
-		}
-
-		return nil
-	})
-
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("connection error: %w", err)
+	// Enable TCP keepalive on Tailscale connection
+	if tcpConn, ok := tsConn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	return nil
+	var g errgroup.Group
+
+	// client -> tailscale
+	g.Go(func() error {
+		defer func() {
+			if tcpConn, ok := tsConn.(*net.TCPConn); ok {
+				tcpConn.CloseWrite()
+			}
+		}()
+		_, err := io.Copy(tsConn, lstConn)
+		if err != nil {
+			return fmt.Errorf("failed to copy data to tailscale node: %w", err)
+		}
+		return nil
+	})
+
+	// tailscale -> client
+	g.Go(func() error {
+		defer func() {
+			if tcpConn, ok := lstConn.(*net.TCPConn); ok {
+				tcpConn.CloseWrite()
+			}
+		}()
+		_, err := io.Copy(lstConn, tsConn)
+		if err != nil {
+			return fmt.Errorf("failed to copy data from tailscale node: %w", err)
+		}
+		return nil
+	})
+
+	return g.Wait()
 }
